@@ -5,12 +5,12 @@ var ed = require('ed25519-supercop')
 var test = require('tape')
 var crypto = require('crypto')
 
-test('local mutable put/get', function (t) {
+common.wrapTest(test, 'local mutable put/get', function (t, ipv6) {
   t.plan(4)
 
   var keypair = ed.createKeyPair(ed.createSeed())
 
-  var dht = new DHT({ bootstrap: false, verify: ed.verify })
+  var dht = new DHT({ bootstrap: false, verify: ed.verify, ipv6: ipv6 })
   t.once('end', function () {
     dht.destroy()
   })
@@ -44,13 +44,13 @@ test('local mutable put/get', function (t) {
   })
 })
 
-test('multiparty mutable put/get', function (t) {
+common.wrapTest(test, 'multiparty mutable put/get', function (t, ipv6) {
   t.plan(4)
 
   var keypair = ed.createKeyPair(ed.createSeed())
 
-  var dht1 = new DHT({ bootstrap: false, verify: ed.verify })
-  var dht2 = new DHT({ bootstrap: false, verify: ed.verify })
+  var dht1 = new DHT({ bootstrap: false, verify: ed.verify, ipv6: ipv6 })
+  var dht2 = new DHT({ bootstrap: false, verify: ed.verify, ipv6: ipv6 })
 
   t.once('end', function () {
     dht1.destroy()
@@ -61,12 +61,12 @@ test('multiparty mutable put/get', function (t) {
 
   var pending = 2
   dht1.listen(function () {
-    dht2.addNode({ host: '127.0.0.1', port: dht1.address().port })
+    dht2.addNode({ host: common.localHost(ipv6, true), port: dht1.address().port })
     dht2.once('node', ready)
   })
 
   dht2.listen(function () {
-    dht1.addNode({ host: '127.0.0.1', port: dht2.address().port })
+    dht1.addNode({ host: common.localHost(ipv6, true), port: dht2.address().port })
     dht1.once('node', ready)
   })
 
@@ -96,15 +96,15 @@ test('multiparty mutable put/get', function (t) {
   }
 })
 
-test('delegated put', function (t) {
+common.wrapTest(test, 'delegated put', function (t, ipv6) {
   t.plan(5)
 
   var keypair = ed.createKeyPair(ed.createSeed())
 
-  var dht1 = new DHT({ bootstrap: false, verify: ed.verify })
-  var dht2 = new DHT({ bootstrap: false, verify: ed.verify })
-  var dht3 = new DHT({ bootstrap: false, verify: ed.verify })
-  var dht4 = new DHT({ bootstrap: false, verify: ed.verify })
+  var dht1 = new DHT({ bootstrap: false, verify: ed.verify, ipv6: ipv6 })
+  var dht2 = new DHT({ bootstrap: false, verify: ed.verify, ipv6: ipv6 })
+  var dht3 = new DHT({ bootstrap: false, verify: ed.verify, ipv6: ipv6 })
+  var dht4 = new DHT({ bootstrap: false, verify: ed.verify, ipv6: ipv6 })
 
   t.once('end', function () {
     dht1.destroy()
@@ -119,23 +119,25 @@ test('delegated put', function (t) {
   common.failOnWarningOrError(t, dht4)
 
   var pending = 4
+  var host = common.localHost(ipv6, true)
+
   dht1.listen(function () {
-    dht2.addNode({ host: '127.0.0.1', port: dht1.address().port })
+    dht2.addNode({ host: host, port: dht1.address().port })
     dht2.once('node', ready)
   })
 
   dht2.listen(function () {
-    dht1.addNode({ host: '127.0.0.1', port: dht2.address().port })
+    dht1.addNode({ host: host, port: dht2.address().port })
     dht1.once('node', ready)
   })
 
   dht3.listen(function () {
-    dht4.addNode({ host: '127.0.0.1', port: dht3.address().port })
+    dht4.addNode({ host: host, port: dht3.address().port })
     dht4.once('node', ready)
   })
 
   dht4.listen(function () {
-    dht3.addNode({ host: '127.0.0.1', port: dht4.address().port })
+    dht3.addNode({ host: host, port: dht4.address().port })
     dht3.once('node', ready)
   })
 
@@ -252,6 +254,90 @@ test('multiparty mutable put/get sequence', function (t) {
         })
       })
     }
+  }
+})
+
+test('mutable update mesh', function (t) {
+  t.plan(12)
+  /*
+   0 <-> 1 <-> 2
+   ^     ^
+   |     |
+   v     v
+   3 <-> 4 <-> 5
+   ^           ^
+   |           |
+   v           v
+   6 <-> 7 <-> 8
+
+   tests: 0 to 8, 4 to 6, 1 to 5
+   */
+  var edges = [
+    [0, 1], [1, 2], [1, 3], [2, 4], [3, 4], [3, 6],
+    [4, 5], [5, 8], [6, 7], [7, 8]
+  ]
+
+  var dht = []
+  var pending = 0
+  for (var i = 0; i < 9; i++) {
+    (function (i) {
+      var d = new DHT({ bootstrap: false, verify: ed.verify })
+      dht.push(d)
+      common.failOnWarningOrError(t, d)
+      pending++
+      d.listen(function () {
+        if (--pending === 0) addEdges()
+      })
+    })(i)
+  }
+
+  function addEdges () {
+    var pending = edges.length
+    for (var i = 0; i < edges.length; i++) {
+      (function (e) {
+        dht[e[1]].addNode({ host: '127.0.0.1', port: dht[e[0]].address().port })
+        dht[e[1]].once('node', function () {
+          if (--pending === 0) ready()
+        })
+      })(edges[i])
+    }
+  }
+
+  t.once('end', function () {
+    for (var i = 0; i < dht.length; i++) {
+      dht[i].destroy()
+    }
+  })
+
+  function ready () {
+    send(0, 8, common.fill(100, 'abc'))
+    send(4, 6, common.fill(20, 'xyz'))
+    send(1, 5, common.fill(500, 'whatever'))
+  }
+
+  function send (srci, dsti, value) {
+    var src = dht[srci]
+    var dst = dht[dsti]
+    var keypair = ed.createKeyPair(ed.createSeed())
+    var opts = {
+      k: keypair.publicKey,
+      sign: common.sign(keypair),
+      seq: 0,
+      v: value
+    }
+
+    var xhash = crypto.createHash('sha1').update(opts.k).digest()
+    src.put(opts, function (err, hash) {
+      t.error(err)
+      t.equal(hash.toString('hex'), xhash.toString('hex'))
+
+      dst.get(xhash, function (err, res) {
+        t.ifError(err)
+        t.equal(res.v.toString('utf8'), opts.v.toString('utf8'),
+                'from ' + srci + ' to ' + dsti
+        )
+      })
+    })
   }
 })
 
@@ -401,90 +487,6 @@ test('transitive mutable update', function (t) {
         t.ifError(err)
         t.equal(res.v.toString('utf8'), opts.v.toString('utf8'),
           'got node 1 update from node 3'
-        )
-      })
-    })
-  }
-})
-
-test('mutable update mesh', function (t) {
-  t.plan(12)
-  /*
-    0 <-> 1 <-> 2
-          ^     ^
-          |     |
-          v     v
-          3 <-> 4 <-> 5
-          ^           ^
-          |           |
-          v           v
-          6 <-> 7 <-> 8
-
-    tests: 0 to 8, 4 to 6, 1 to 5
-  */
-  var edges = [
-    [0, 1], [1, 2], [1, 3], [2, 4], [3, 4], [3, 6],
-    [4, 5], [5, 8], [6, 7], [7, 8]
-  ]
-
-  var dht = []
-  var pending = 0
-  for (var i = 0; i < 9; i++) {
-    (function (i) {
-      var d = new DHT({ bootstrap: false, verify: ed.verify })
-      dht.push(d)
-      common.failOnWarningOrError(t, d)
-      pending++
-      d.listen(function () {
-        if (--pending === 0) addEdges()
-      })
-    })(i)
-  }
-
-  function addEdges () {
-    var pending = edges.length
-    for (var i = 0; i < edges.length; i++) {
-      (function (e) {
-        dht[e[1]].addNode({ host: '127.0.0.1', port: dht[e[0]].address().port })
-        dht[e[1]].once('node', function () {
-          if (--pending === 0) ready()
-        })
-      })(edges[i])
-    }
-  }
-
-  t.once('end', function () {
-    for (var i = 0; i < dht.length; i++) {
-      dht[i].destroy()
-    }
-  })
-
-  function ready () {
-    send(0, 8, common.fill(100, 'abc'))
-    send(4, 6, common.fill(20, 'xyz'))
-    send(1, 5, common.fill(500, 'whatever'))
-  }
-
-  function send (srci, dsti, value) {
-    var src = dht[srci]
-    var dst = dht[dsti]
-    var keypair = ed.createKeyPair(ed.createSeed())
-    var opts = {
-      k: keypair.publicKey,
-      sign: common.sign(keypair),
-      seq: 0,
-      v: value
-    }
-
-    var xhash = crypto.createHash('sha1').update(opts.k).digest()
-    src.put(opts, function (err, hash) {
-      t.error(err)
-      t.equal(hash.toString('hex'), xhash.toString('hex'))
-
-      dst.get(xhash, function (err, res) {
-        t.ifError(err)
-        t.equal(res.v.toString('utf8'), opts.v.toString('utf8'),
-          'from ' + srci + ' to ' + dsti
         )
       })
     })
